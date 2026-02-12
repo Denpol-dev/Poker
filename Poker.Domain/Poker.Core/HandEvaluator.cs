@@ -16,11 +16,34 @@ public static class HandEvaluator
             var hv = Evaluate5(combo);
             var cur = new BestHand(hv, combo);
 
-            if (best is null || cur.Value.CompareTo(best.Value) > 0)
+            if (best is null)
+            {
                 best = cur;
+                continue;
+            }
+
+            int cmp = cur.Value.CompareTo(best.Value);
+
+            if (cmp > 0 || (cmp == 0 && CompareCards(cur.Cards, best.Cards) > 0))
+            {
+                best = cur;
+            }
         }
 
         return best!;
+    }
+
+    private static int CompareCards(IReadOnlyList<Card> a, IReadOnlyList<Card> b)
+    {
+        var ar = a.Select(c => (int)c.Rank).OrderByDescending(x => x).ToArray();
+        var br = b.Select(c => (int)c.Rank).OrderByDescending(x => x).ToArray();
+
+        for (int i = 0; i < 5; i++)
+        {
+            if (ar[i] != br[i])
+                return ar[i].CompareTo(br[i]);
+        }
+        return 0;
     }
 
     private static IEnumerable<IReadOnlyList<Card>> CombinationsOf5(IReadOnlyList<Card> c)
