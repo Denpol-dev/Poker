@@ -1,6 +1,4 @@
-﻿using Poker.Shared;
-
-namespace Poker.Core;
+﻿namespace Poker.Core;
 
 public static class HandEvaluator
 {

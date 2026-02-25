@@ -143,6 +143,60 @@ public class PokerHub(RoomRegistry rooms) : Hub
         }
     }
 
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        var roomId = Context.Items.TryGetValue("roomId", out var r) ? r as string : null;
+        var playerId = Context.Items.TryGetValue("playerId", out var v) ? v as Guid? : null;
+
+        if (string.IsNullOrWhiteSpace(roomId) || playerId is null)
+            return;
+
+        if (!rooms.TryGet(roomId, out var room))
+            return;
+
+        string? name = null;
+        bool didFold = false;
+
+        lock (room)
+        {
+            room.ConnectionToPlayer.Remove(Context.ConnectionId);
+
+            var p = room.Game.Players.FirstOrDefault(x => x.PlayerId == playerId.Value);
+            if (p is null) return;
+
+            name = p.Name;
+
+            if (IsHandInProgress(room.Game))
+            {
+                p.Status = PlayerStatus.Folded;
+                room.PendingRemoveAfterHand.Add(p.PlayerId);
+                didFold = true;
+
+                var idx = room.Game.Players.IndexOf(p);
+                if (idx == room.Game.TurnIndex)
+                    room.Game.TurnIndex = NextActiveIndex(room.Game, room.Game.TurnIndex);
+
+                TryFinishByEveryoneFolded(room.Game);
+            }
+            else
+            {
+                room.Game.Players.Remove(p);
+            }
+
+            FixTurnIndex(room.Game);
+
+            if (room.Game.Street == Street.Showdown)
+                CleanupPendingRemovals(room);
+        }
+
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, roomId);
+        await BroadcastSnapshots(room, didFold
+            ? $"{name ?? "Player"} disconnected (auto-fold)"
+            : $"{name ?? "Player"} disconnected");
+    }
+
+    #region Приватные методы
+
     private static void ResolveShowdown_NoSidePots_AndReveal(RoomState room)
     {
         var g = room.Game;
@@ -338,60 +392,6 @@ public class PokerHub(RoomRegistry rooms) : Hub
         );
     }
 
-    public override async Task OnDisconnectedAsync(Exception? exception)
-    {
-        var roomId = Context.Items.TryGetValue("roomId", out var r) ? r as string : null;
-        var playerId = Context.Items.TryGetValue("playerId", out var v) ? v as Guid? : null;
-
-        if (string.IsNullOrWhiteSpace(roomId) || playerId is null)
-            return;
-
-        if (!rooms.TryGet(roomId, out var room))
-            return;
-
-        string? name = null;
-        bool didFold = false;
-
-        lock (room)
-        {
-            room.ConnectionToPlayer.Remove(Context.ConnectionId);
-
-            var p = room.Game.Players.FirstOrDefault(x => x.PlayerId == playerId.Value);
-            if (p is null) return;
-
-            name = p.Name;
-
-            if (IsHandInProgress(room.Game))
-            {
-                p.Status = PlayerStatus.Folded;
-                room.PendingRemoveAfterHand.Add(p.PlayerId);
-                didFold = true;
-
-                var idx = room.Game.Players.IndexOf(p);
-                if (idx == room.Game.TurnIndex)
-                    room.Game.TurnIndex = NextActiveIndex(room.Game, room.Game.TurnIndex);
-
-                TryFinishByEveryoneFolded(room.Game);
-            }
-            else
-            {
-                room.Game.Players.Remove(p);
-            }
-
-            FixTurnIndex(room.Game);
-
-            if (room.Game.Street == Street.Showdown)
-                CleanupPendingRemovals(room);
-        }
-
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, roomId);
-        await BroadcastSnapshots(room, didFold
-            ? $"{name ?? "Player"} disconnected (auto-fold)"
-            : $"{name ?? "Player"} disconnected");
-    }
-
-    // ===== helpers =====
-
     private static bool IsHandInProgress(GameState g)
         => g.Deck is not null && g.Street != Street.Showdown;
 
@@ -442,4 +442,6 @@ public class PokerHub(RoomRegistry rooms) : Hub
         g.Pot = 0;
         g.Street = Street.Showdown;
     }
+
+    #endregion
 }

@@ -81,14 +81,26 @@ public static class GameEngine
 
             case ActionType.Raise:
                 {
-                    var amount = dto.Amount ?? 0;
-                    if (amount <= g.CurrentBet) return "При поднятии ставки общая сумма ставки должна превышать текущую ставку.";
+                    var target = dto.Amount ?? 0;
 
-                    int need = amount - p.BetThisStreet;
-                    if (need <= 0) return "Неверная сумма поднятия, нужно больше.";
+                    // максимум, до которого он может довести общую ставку (total)
+                    var maxTotal = p.BetThisStreet + p.Stack;
 
-                    TakeChips(p, g, need);
-                    g.CurrentBet = amount;
+                    if (target > maxTotal)
+                        target = maxTotal; // превращаем в all-in
+
+                    if (target <= g.CurrentBet)
+                    {
+                        // это не рейз, это all-in "колл насколько смог"
+                        int need = g.CurrentBet - p.BetThisStreet;
+                        if (need > 0) TakeChips(p, g, need);
+                        break;
+                    }
+
+                    int needRaise = target - p.BetThisStreet;
+                    TakeChips(p, g, needRaise);
+
+                    g.CurrentBet = target;
 
                     g.LastAggressorIndex = idx;
                     g.ActionsSinceLastRaise = 1;
@@ -117,21 +129,59 @@ public static class GameEngine
         return $"{p.Name}: {dto.Action}" + (dto.Amount is null ? "" : $" {dto.Amount}");
     }
 
+    private static bool NoOneCanAct(GameState g)
+    => g.Players.All(p => p.Status is PlayerStatus.Folded or PlayerStatus.Out or PlayerStatus.AllIn);
+
+    private static void DealRestToShowdown(GameState g)
+    {
+        if (g.Deck is null) throw new InvalidOperationException("Deck missing.");
+
+        while (g.Street != Street.Showdown)
+        {
+            switch (g.Street)
+            {
+                case Street.Preflop:
+                    g.Board.Add(g.Deck.Draw());
+                    g.Board.Add(g.Deck.Draw());
+                    g.Board.Add(g.Deck.Draw());
+                    g.Street = Street.Flop;
+                    break;
+                case Street.Flop:
+                    g.Board.Add(g.Deck.Draw());
+                    g.Street = Street.Turn;
+                    break;
+                case Street.Turn:
+                    g.Board.Add(g.Deck.Draw());
+                    g.Street = Street.River;
+                    break;
+                case Street.River:
+                    g.Street = Street.Showdown;
+                    break;
+            }
+        }
+    }
+
     private static void AdvanceTurnOrStreet(GameState g)
     {
-        // следующий активный
+        if (NoOneCanAct(g))
+        {
+            DealRestToShowdown(g);
+            return;
+        }
+
         g.TurnIndex = NextActiveIndex(g, g.TurnIndex);
 
-        // проверим, завершилась ли улица: все активные либо уравняли, либо all-in (all-in пока нет)
         if (IsStreetComplete(g))
         {
-            // собрать ставки в банк
-            foreach (var p in g.Players) { /* уже в Pot при TakeChips */ }
-            foreach (var p in g.Players) p.BetThisStreet = 0;
-            g.CurrentBet = 0;
+            foreach (var p in g.Players)
+                p.BetThisStreet = 0;
 
-            // открыть следующую улицу
-            if (g.Deck is null) throw new InvalidOperationException("Deck missing.");
+            g.CurrentBet = 0;
+            g.LastAggressorIndex = -1;
+            g.ActionsSinceLastRaise = 0;
+
+            if (g.Deck is null)
+                throw new InvalidOperationException("Deck missing.");
 
             switch (g.Street)
             {
@@ -153,27 +203,36 @@ public static class GameEngine
                     g.Street = Street.Showdown;
                     break;
             }
-            g.LastAggressorIndex = -1;
-            g.ActionsSinceLastRaise = 0;
-            // первый ход на новой улице: после дилера (MVP)
-            g.TurnIndex = NextActiveIndex(g, g.DealerIndex);
+            if (g.Street != Street.Showdown)
+                g.TurnIndex = NextActiveIndex(g, g.DealerIndex);
+        }
+
+        if (NoOneCanAct(g))
+        {
+            DealRestToShowdown(g);
+            return;
         }
     }
 
     private static bool IsStreetComplete(GameState g)
     {
-        // 1) Все активные уравняли текущую ставку
+        // 1) Кто в раздаче (не Folded/Out)
         foreach (var p in g.Players)
         {
-            if (p.Status != PlayerStatus.Active) continue;
-            if (p.BetThisStreet != g.CurrentBet) return false;
+            if (p.Status is PlayerStatus.Folded or PlayerStatus.Out) continue;
+
+            // Active должен уравнять
+            if (p.Status == PlayerStatus.Active && p.BetThisStreet != g.CurrentBet)
+                return false;
+
+            // AllIn может НЕ уравнять
         }
 
-        // 2) Все активные успели сходить после последнего raise (или начала улицы)
-        int activeCount = g.Players.Count(p => p.Status == PlayerStatus.Active);
-        if (activeCount <= 1) return true;
+        // 2) Все, кто может действовать (Active), успели сходить после last raise
+        int canActCount = g.Players.Count(p => p.Status == PlayerStatus.Active);
+        if (canActCount <= 1) return true;
 
-        return g.ActionsSinceLastRaise >= activeCount;
+        return g.ActionsSinceLastRaise >= canActCount;
     }
 
     private static void PostBlind(GameState g, int index, int blind)
@@ -189,6 +248,9 @@ public static class GameEngine
         p.Stack -= a;
         p.BetThisStreet += a;
         g.Pot += a;
+
+        if (p.Stack == 0 && p.Status == PlayerStatus.Active)
+            p.Status = PlayerStatus.AllIn;
     }
 
     private static int NextActiveIndex(GameState g, int fromIndex)
