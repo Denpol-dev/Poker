@@ -117,14 +117,16 @@ public class PokerHub(RoomRegistry rooms) : Hub
 
         string msg;
         bool showdown;
+        bool shouldResolveShowdown;
 
         lock (room)
         {
             msg = GameEngine.ApplyAction(room, dto);
 
             showdown = room.Game.Street == Street.Showdown;
+            shouldResolveShowdown = showdown && room.Game.Board.Count >= 5;
 
-            if (showdown)
+            if (shouldResolveShowdown)
             {
                 ResolveShowdown_NoSidePots_AndReveal(room);
 
@@ -202,7 +204,7 @@ public class PokerHub(RoomRegistry rooms) : Hub
         var g = room.Game;
 
         var contenders = g.Players
-            .Where(p => p.Status == PlayerStatus.Active)
+            .Where(p => p.Status is PlayerStatus.Active or PlayerStatus.AllIn)
             .ToList();
 
         g.ShowdownHands.Clear();
@@ -210,7 +212,7 @@ public class PokerHub(RoomRegistry rooms) : Hub
 
         if (contenders.Count == 0)
         {
-            g.ShowdownMessage = "Шоудаун: активных игроков нет.";
+            g.ShowdownMessage = "Шоудаун: участников вскрытия нет.";
             return;
         }
 
@@ -265,7 +267,7 @@ public class PokerHub(RoomRegistry rooms) : Hub
             g.Pot = 0;
         }
 
-        // Заполняем reveal + текст рук (для Active игроков)
+        // На вскрытии открываем руки всех участников, дошедших до шоудауна.
         foreach (var (P, Best) in evaluated)
         {
             g.ShowdownReveal.Add(P.PlayerId);
@@ -341,7 +343,6 @@ public class PokerHub(RoomRegistry rooms) : Hub
             CardDto? r2 = null;
             string? hand = null;
 
-            // на Showdown раскрываем только тех, кто дошёл (Active на момент вскрытия)
             if (g.Street == Street.Showdown && g.ShowdownReveal.Contains(p.PlayerId))
             {
                 r1 = p.Hole1?.ToDto();
